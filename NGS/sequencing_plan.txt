@@ -1,0 +1,416 @@
+
+                                              ~~~~~~~~~~~~~~~ Quality Assessment ~~~~~~~~~~~~~~~
+
+1) The generation of sequence data and FASTQ formatted files, which also includes quality assessment of FASTQ data using FASTQC
+
+-- Name:
+<sample name>_<barcode_sequence>_L<lane>_R<read_number>_<set_number>.fastq.gz
+
+-- Format:
+@<instrument>:<run number>:<flowcell ID>:<lane>:<tile>:<x-pos>:<y-pos> <read[1:paired-end, 2:mate-pair]>:<is filtered[Y,N]>:<control number>:<index>
+<Raw Sequence Letters>
++
+<Encoding for the quality values for each Sequence letter>
+
+-- Properties:
+Quality = -10 x log10(Prob of Mistake)
+=> P = 10^(-Q/10) error rate
+=> if Q=20 then 10^-2 = 1/100   then only 0.1%  probability of the read being wrong.
+=> if Q=40 then 10^-4 = 1/10000 then only 0.01% probability of the read being wrong.
+
+Phred scores = [0,93] = ASCII[33,126]-33 and 20+ refers to 99% accuracy of the read.
+The total number of reads = number of lines in FastQ/4
+
+-- Code for FastQC:
+> fastqc
+or
+> fastqc [fastq file name]
+
+-- Analysis of FastQC files for Quality Assessment of Reads:
+    - Errors typically increase/Quality typically decreases as a function of read length.
+
+  1. Quality scores of bp per Position in all the sequences/reads: This shows quality scores (y axis) versus base position (x axis).
+        - We need to trim the bp of Quality < 20 usually (<90% accuracy), or Quality < 30 (<99.90% accuracy), depending on the accuracy we desire.
+  2. Quality scores per Tile Sequence: The plot shows the deviation from the average quality for each tile.
+        - A Good Quality per tile sequence will show a cold plot (blue) all over
+  3. Quality scores per Sequence: Allows us to see if a subset of our sequences have universally low quality values.
+        - It is often the case that a subset of sequences will have universally poor quality, often because they are poorly imaged.
+        - Poor quality sequences subset must represent only a small percentage of the total sequences.
+        => If the most observed frequency of mean quality is below 27 - this equates to a 0.2% error rate => a WARNING is raised
+        => If the most observed frequency of mean quality is below 20 - this equates to a 1%   error rate => a FAILURE is raised
+  4. Per sequence GC content: Better => Normal Distrbution
+  5. Per base N sequence: Better => Straight Line at 0
+  6. Sequence Duplication Levels: Must be peak at 1 refering to most sequences only occur once, then must become low over all values.
+  7. Overrepresented Sequences: Shows known sequences of contamination like promoters, primers and so on that are duplicated in my sequencing.
+
+=> To get rid of low quality scores sequences/bp we do Quality Control by using Trimmomatic
+==============================================================================================================================================================
+                                              ~~~~~~~~~~~~~~~ Quality Control ~~~~~~~~~~~~~~~
+
+2)  Trimming FastQ files in order to obtain high Quality Reads only (>20 or >30 usually)
+
+-- Manual: http://www.usadellab.org/cms/uploads/supplementary/Trimmomatic/TrimmomaticManual_V0.32.pdf
+
+-- The current trimming steps are:
+ILLUMINACLIP: Cut adapter and other illumina-specific sequences from the read. A Purification Step.
+            Code: ILLUMNACLIP:<fastaWithAdaptersEtc>:<seed mismatches>:<palindrome clip threshold>:<simple clip threshold>:<minAdapterLength>:<keepBothReads>
+
+SLIDINGWINDOW: Perform a sliding window trimming, cutting once the average quality within the window falls below a threshold.
+            Code: SLIDINGWINDOW:<windowSize>:<requiredQuality>
+
+MAXINFO: Used when the sequence length desired is known. Typically length is around 40. Strictness is between 0(longer reads)-1(correctness)
+          MAXINFO:<targetLength>:<strictness> || Never use with SLIDINGWINDOW. Sometimes can outperform it, but very complicated.
+
+LEADING: Cut bases off the start of a read, if below a threshold quality
+            Code: LEADING:<minimum quality required to keep a leading base>
+
+TRAILING: Cut bases off the end of a read, if below a threshold quality
+            Code: TRAILING:<minimum quality required to keep a trailing base>
+
+CROP: Cut the read to a specified length
+            Code: CROP:<number of base pairs to keep starting first bp>
+
+HEADCROP: Cut the specified number of bases from the start of the read
+            Code: HEADCROP:<number of base pairs to remove from the end>
+
+MINLEN: Drop the read if it is below a specified length
+            Code: MINLEN:<desired minimum length of target>
+
+TOPHRED33: Convert quality scores to Phred-33
+TOPHRED64: Convert quality scores to Phred-64
+
+-- Output:
+For single-ended data, one input and one output file are specified, plus the processing steps.
+For paired-end data, two input files are specified, and 4 output files:
+      2 for the 'paired' output where both reads survived the processing.
+      2 for corresponding 'unpaired' output where a read survived, but the partner read did not.
+
+-- Codes for Trimmomatic: in bif425_fall20_hamdanieh_bilal/NGS/trimmomatic
+
+-- For even more details: https://www.genepattern.org/modules/docs/Trimmomatic/
+
+=============================================================================================================================================================
+                                              ~~~~~~~~~~~~~~~ Mapping to a Reference Genome ~~~~~~~~~~~~~~~
+
+3) Mapping my sequences to a Reference Genome and generating the SAM/BAM Files and their Manipulation and Analysis
+
+-- Step 1: Getting the Reference Genome and Indexing it
+
+Code: in bif425_fall20_hamdanieh_bilal/NGS/mapping/
+      files: get_chromosomes.sh
+             indexing.sh
+
+-- Step 2: Mapping to the Reference Genome
+
+BWA SW and MEM can map longer sequences (70bp to1Mbp) and share similar features such as long-read support and split alignment,
+but BWA-MEM, which is the latest, is generally recommended for high-quality queries as it is faster and more accurate.
+BWA-MEM also has better performance than BWA-backtrack for 70-100bp Illumina reads.
+
+=> We use BWA-MEM for our mapping for the reasons stated above.
+
+Code: in bif425_fall20_hamdanieh_bilal/NGS/mapping/bwa_mem.sh
+
+-- Step 3: Analyzing SAM Sequence Alignment Map format File:
+
+  Properties of a SAM File:
+      a.  Flexible enough to store all the alignment information generated by various alignment programs
+      b.  Is simple enough to be easily generated by alignment programs or converted from existing alignment formats.
+      c.  Is compact in file size.
+      d.  Allows most of operations on the alignment to work on a stream without loading the whole alignment into memory.
+      e.  Allows the file to be indexed by genomic position to efficiently retrieve all reads aligning to a locus.
+
+  -Usually we convert SAM to BAM for memory reasons: Samtools view -Sb [sam_file_aln.sam] > [name_aln].bam
+
+  --Important note: check R_Workplace/Chromosomes for an example of the SAM file if needed
+
+  -- SAM Manual: http://samtools.github.io/hts-specs/SAMv1.pdf
+  -- Book page 402 Very Important
+
+    1 >> Convert SAM to BAM from sam_to_bam.sh
+      OR:
+      pickard_sam_to_bam.sh
+
+    Then, genome wide view:
+    2 >> samtools tview sorted_bam.bam
+    The quality scores are colored blue (for 0–9), green (10–19), yellow (20–29), or white (≥30).
+    Underlining represents secondary or orphan reads.
+    This viewer is useful to quickly assess the quality at genomic loci of interest, such as positions having single-nucleotide variants.
+
+    3 >> Calculating Depth of each read
+    Code: bif425_fall20_hamdanieh_bilal/NGS/samtools/depth_samtools.sh
+    Analysis: A higher Depth (check book p 405 for exact values) => higher statistical power
+
+    4 >> Next step is getting the flag stated
+    Code: bif425_fall20_hamdanieh_bilal/NGS/samtools/flagstats.sh
+         OR getting sum of flags 163 for example:
+    Code: cat NIST7035_aln.sam | cut -f 2 | grep '163' | awk '{ SUM += 1 } END { print SUM }'
+
+    5 >> OR EXTRACT the ones with specific flag using:
+    Code: samtools view -f 0x100 sorted_bam.bam
+         OR SKIP the ones with the specific flag using:
+    Code: samtools view -F 0x100 sorted_bam.bam
+
+    6 >> GET the total number of CIGAR with deletions/Insertions or etc.
+    Code: bif425_fall20_hamdanieh_bilal/NGS/samtools/cigars.sh
+
+    Question: Calculate the number of insertion mutations in supplementary reads
+    samtools view -f 0x800 sorted_bam.bam | cut -f 6 | grep -o '[0-9]*I' | grep -o '[0-9]' | awk '{ SUM += $1 } END { print SUM }'
+
+    Question: Calculate the number of 0x800
+    sam tools view -c -f 0x800 sorted_bam.bam
+=============================================================================================================================================================
+                                                  ~~~~~~~~~~~~~~~ Variant Calling ~~~~~~~~~~~~~~~
+Importance and Benifits of new Variant Calling Methods:
+            https://gatk.broadinstitute.org/hc/en-us/articles/360035890431-The-logic-of-joint-calling-for-germline-short-variants
+
+
+>> Step 1: Reallignment by IndelRealigner
+    The alignment of reads by BWA-MEM is done read-by-read, and many tend to accumulate erroneous SNV calls near true insertions and deletions,
+    due to misalignment. Mainly because alignment algorithms penalize mismatches less than gaps.
+
+    -- To Correct, we use the IndelRealigner module of GATK performs a second pass over BAM file and corrects some of the errors by performing
+        a local realignment of reads around candidate indels
+
+        Mechanism:
+        IndelRealigner module of GATK performs a second pass over BAM file and corrects some of
+        the errors by performing a local realignment of reads around candidate indels
+
+        Code: REQUIRED even without running Reallignment
+        java -jar ~/picard/build/libs/picard.jar CreateSequenceDictionary \
+              -REFERENCE reference_genome.fa \
+              -OUTPUT reference.dict
+
+    Mechaism Continued:
+        The IndelRealigner uses a VCF file containing known indels that serve as a kind of gold standard
+        that GATK will use to improve the performance of local alignment.
+    Process:
+    get the vcf files from gatk website + its dictionary (.tbi file)
+
+  >> RealignerTargetCreator in GATK3: Creates an interval target file that specifies where the indels are
+    Java -jar GenomeAnalysisTK.jar \
+      -T RealignerTargetCreator \
+      -R hg38.fa \
+      -known Mills_and_1000G_gold_standard.indels.hg38.vcf.gz \
+      -I NIST7035_dedup.bam \
+      -o NIST7035_targetcreator.intervals
+
+   >> Realignment step:We can then perform the realignment using the command:
+      java -Xmx8G -Djava.io.tmpdir=/tmp -jar \
+            GenomeAnalysisTK.jar \
+            -T IndelRealigner \
+            -R hg38.fa \
+            -targetIntervals NIST7035_targetcreator.intervals \
+            -known Mills_and_1000G_gold_standard.indels.hg38.vcf.gz \
+            -I NIST7035_dedup.bam \
+            -o NIST7035_indelreadligner.bam
+
+>> Step 2: BQSR Base Quality Score Recalibration
+      BQSR Co-Variates:
+      1- Lane
+      2- Originally reported quality
+      3- Machine cycle (position in the read)
+      4- Sequence context (preceding and subsequent base)
+        => estimates the influence of each of these covariate => get all previously obserevd covariates
+      Matching to previously known covariates requires:
+          -- Download known sites of variations from dbSNP (.tbi file) ex: https://ftp.ncbi.nih.gov/snp/organisms/human_9606/VCF/GATK/
+
+
+      -- Base Reacilbrator: Builds a model of covariation based on the input data and a set of known variants, producing a recalibration file.
+      Code:
+        gatk BaseRecalibrator \
+              -I my_reads.bam \
+              -R ref_genome.fa \
+              --known-sites sites_of_variation.vcf \
+              --known-sites another/optional/setOfSitesToMask.vcf \
+              -O recal_data.table
+
+      -- ApplyBQSR tool adjusts the base quality scores in the data based on the model, producing a new BAM file
+      Code:
+        gatk ApplyBQSR \
+              -R ref_genome.fa \
+              -I input.bam \
+              --bqsr-recal-file recal_data.table \
+              -O output_recal.bam
+
+      There is an optional but highly recommended step that involves building a second model and generating before/after plots to visualize
+      the effects of the recalibration process. This is useful for quality control purposes.
+      => Comparison of before and after GATK recalibration:
+      gatk -T BaseRecalibrator \
+           -R reference.fa
+           -I output_recal.bam \
+           -knownSites All_xxxxxx.vcf.gz \
+           -bqsr recal_data.table \
+           -O NIST-secondpass.table
+
+      gatk AnalyzeCovariates \
+        -before recal_data.table \
+        -after NIST-secondpass.table \
+        -plots AnalyzeCovariates.pdf
+
+        Roughly speaking, like removing the background noise of analog signals. once removed known polymorphic sites from this process
+        (dbSNP sites are suggested to be used here), the idea is to normalize all the base qualities by lowering the "noise" they may share.
+        This way you'll be able to find low signals (low quality bases) that would be otherwise "lost in translation".
+
+        We also note an increase in the peak of the left skewness => Increase in the number of reads with high quality.
+
+
+
+      Finally: Haplotype Calling for Variant Discovery:
+      The HaplotypeCaller is capable of calling SNPs and indels simultaneously via local de-novo assembly of haplotypes in an active region.
+      In other words, whenever the program encounters a region showing signs of variation, it discards the existing mapping information and
+      completely reassembles the reads in that region. This allows the HaplotypeCaller to be more accurate when calling regions that are
+      traditionally difficult to call, for example when they contain different types of variants close to each other. It also makes the
+      HaplotypeCaller much better at calling indels.
+
+      Single-sample GVCF calling (outputs intermediate GVCF) CODE:
+      gatk --java-options "-Xmx4g" HaplotypeCaller \
+            -R ref_genome.fa \
+            -I input.bam \
+            -O output.g.vcf.gz \
+            -ERC GVCF
+
+      Perform joint genotyping CODE:
+      gatk --java-options "-Xmx4g" GenotypeGVCFs \
+            -R ref_genome.fa \
+            -V input.g.vcf.gz \
+            -O output.vcf.gz
+
+====================================================================================================================================================
+
+  >> Analyzing VCF files: https://samtools.github.io/hts-specs/VCFv4.2.pdf
+
+  Using bcftools from github
+
+  Format:
+  # [bcftools tutorial](https://youtu.be/9qc7eK4o_2M)
+-----------
+
+[bcftools](https://samtools.github.io/bcftools/bcftools.html)
+
+[expressions](https://samtools.github.io/bcftools/bcftools.html#expressions)
+
+Sudmant et al. 2015
+[1000 Genomes SV VCF](ftp://ftp.ncbi.nlm.nih.gov/1000genomes/ftp/phase3/integrated_sv_map/ALL.wgs.integrated_sv_map_v2.20130502.svs.genotypes.vcf.gz)
+[1000 Genomes SV VCF Tabix index](ftp://ftp.ncbi.nlm.nih.gov/1000genomes/ftp/phase3/integrated_sv_map/ALL.wgs.integrated_sv_map_v2.20130502.svs.genotypes.vcf.gz.tbi)
+
+* [view](https://github.com/dantaki/videos/tree/master/bcftools#view)
+* [query](https://github.com/dantaki/videos/tree/master/bcftools#query)
+
+------------------------
+
+## view
+
+View opens a VCF file.
+
+```
+bcftools view ALL.wgs.mergedSV.v8.20130502.svs.genotypes.vcf.gz
+```
+
+There are tons of options and filters
+
+```
+# output in bgzip format
+bcftools view ALL.wgs.mergedSV.v8.20130502.svs.genotypes.vcf.gz -Oz
+
+# restrict to a sample
+bcftools view ALL.wgs.mergedSV.v8.20130502.svs.genotypes.vcf.gz -s NA12878
+
+# use a file of samples, one per line
+bcftools view ALL.wgs.mergedSV.v8.20130502.svs.genotypes.vcf.gz -S samples.txt
+```
+
+Subset VCF to a region
+
+```
+# all variants on chromosome 22
+bcftools view ALL.wgs.mergedSV.v8.20130502.svs.genotypes.vcf.gz -r 22
+
+# variants on chromosomes 21 and 22
+bcftools view ALL.wgs.mergedSV.v8.20130502.svs.genotypes.vcf.gz -r 21,22
+
+# variants between positions 13Mb to 14Mb on chromosome 1
+bcftools view ALL.wgs.mergedSV.v8.20130502.svs.genotypes.vcf.gz -r 1:13000000-14000000
+
+# chain two or more regions with commas
+bcftools view ALL.wgs.mergedSV.v8.20130502.svs.genotypes.vcf.gz -r 1:13000000-14000000,2:40000000-41000000
+
+# can combine regions and chromosomes
+bcftools view ALL.wgs.mergedSV.v8.20130502.svs.genotypes.vcf.gz -r 1:13000000-14000000,2:40000000-41000000,3
+```
+
+Subset VCF to many regions using a BED file or similar file
+
+```
+# use a BED file (must end with .bed and be 0-base positions)
+bcftools view ALL.wgs.mergedSV.v8.20130502.svs.genotypes.vcf.gz -R regions.bed
+
+# use a "regions" file, similar format to BED but 1-base position
+bcftools view ALL.wgs.mergedSV.v8.20130502.svs.genotypes.vcf.gz -R regions_1base.txt
+```
+
+You can use expressions to filter variants
+
+https://samtools.github.io/bcftools/bcftools.html#expressions
+
+```
+# get variants with PASS in the FILTER column
+
+bcftools view ALL.wgs.mergedSV.v8.20130502.svs.genotypes.vcf.gz -i'FILTER=="PASS"'
+
+# parse out information from the INFO column
+# get variants with SVTYPE=="DEL"
+
+bcftools view ALL.wgs.mergedSV.v8.20130502.svs.genotypes.vcf.gz -i'INFO/SVTYPE=="DEL"'
+
+# remove variants with any missing genotypes ("." or "./." or ".|." or "./0")
+# the ~ is a matches operator, different from ==
+
+bcftools view ALL.wgs.mergedSV.v8.20130502.svs.genotypes.vcf.gz -e'GT~"\."'
+
+# print variants where the number of ALT alleles is the cohort is equal to 1
+## in other words, one person is 0/1 and the rest are 0/0
+
+bcftools view ALL.wgs.mergedSV.v8.20130502.svs.genotypes.vcf.gz -i'AC==1'
+```
+
+----------------
+
+## query
+
+Query is a tool that allows you to re-format the VCF into a text file for analysis
+
+Common operations include
+
+* convert a VCF of SVs into a BED file
+
+```
+bcftools query -f'%CHROM\t%POS0\t%INFO/END\t%INFO/SVTYPE\n' ALL.wgs.mergedSV.v8.20130502.svs.genotypes.vcf.gz
+
+# only look at DEL
+bcftools query -f'%CHROM\t%POS0\t%INFO/END\t%INFO/SVTYPE\n' -i'INFO/SVTYPE=="DEL"' ALL.wgs.mergedSV.v8.20130502.svs.genotypes.vcf.gz
+
+# get genotypes for each sample, one-per-line
+bcftools query -f'[%CHROM\t%POS0\t%INFO/END\t%INFO/SVTYPE\t%SAMPLE\t%GT\n]' -i'INFO/SVTYPE=="DEL"' test.vcf.gz
+
+# get genotypes for NA12878 but only ALT variants
+bcftools query -f'[%CHROM\t%POS0\t%INFO/END\t%INFO/SVTYPE\t%SAMPLE\t%GT\n]' -i'GT=="ALT"' -s NA12878 ALL.wgs.mergedSV.v8.20130502.svs.genotypes.vcf.gz
+
+# get genotypes for NA12878 but only ALT homozygous variants (1/1)
+bcftools query -f'[%CHROM\t%POS0\t%INFO/END\t%INFO/SVTYPE\t%SAMPLE\t%GT\n]' -i'GT=="AA"' -s NA12878 ALL.wgs.mergedSV.v8.20130502.svs.genotypes.vcf.gz
+
+# same as above, but you might need to change | for / depending on your VCF
+~/Desktop/Genomics_and_Data_Mining/R_Workplace/NGS_Tools/bcftools/bcftools query -f'[%CHROM\t%POS0\t%INFO/END\t%INFO/SVTYPE\t%SAMPLE\t%GT\n]' -i'GT=="1|1"' -s <sample name> test.vcf.gz
+
+```
+
+* print out all the sample names
+
+```
+~/Desktop/Genomics_and_Data_Mining/R_Workplace/NGS_Tools/bcftools/bcftools query -l sample.vcf.gz
+```
+  ch  pos ID  REF ALT Quality Filter  INFO  FORMAT NORMAL_GENOTYPE  TUMOR_GENOTYPE
+
+  Self Writting Codes:
+
+  1- Get all Chromosomes#N:
+   awk '$1==N' sample.sites.vcf

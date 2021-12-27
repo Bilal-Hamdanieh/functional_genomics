@@ -1,0 +1,1427 @@
+<<<<<<< Updated upstream
+---
+title: "MicroArray Project"
+author: "Bilal Hamdanieh"
+date: "10/13/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+<center><h1> Gene Expression Exploratory of the Human Peripheral Blood from Patients with Peripheral Arterial Disease</h1></center>
+<center><h1> && </h1></center>
+<center><h1> Comparative Analysis between the Bioconductor Pipeline and the Original Paper </h1></center>
+
+##Loading Required Libraries
+
+```{r, warning=FALSE, message=FALSE}
+#General Bioconductor packages
+    library(Biobase)
+    library(oligoClasses)
+     
+#Annotation and data import packages
+    library(ArrayExpress)
+    library(hgu133plus2.db)
+     
+#Quality control and pre-processing packages
+    library(oligo)
+    library(arrayQualityMetrics)
+     
+#Analysis and statistics packages
+    library(limma)
+    library(topGO)
+    library(ReactomePA)
+    library(clusterProfiler)
+     
+#Plotting and color options packages
+    library(gplots)
+    library(ggplot2)
+    library(geneplotter)
+    library(RColorBrewer)
+    library(pheatmap)
+     
+#Formatting/documentation packages
+    library(dplyr)
+    library(tidyr)
+
+#Helpers:
+    library(stringr)
+    library(matrixStats)
+    library(genefilter)
+    library(openxlsx)
+    library(devtools)
+
+```
+
+<center><h2> Downloading and Importing the Data Set to R </h2></center>
+```{r}
+#===========================================  
+#~~ Downloading and Importing the Data Set
+raw_data_dir="C:\\Users\\Hamda\\Desktop\\University\\2nd Year\\Fall Semester\\Genomics and Data Mining\\R Workplace\\EMTAB_Arterial_Disease"
+#anno_AE <- getAE("E-GEOD-27034", path = raw_data_dir, type = "full")
+#=========================================== 
+# ~~ Data Set Format Explanation:
+# The data Sets in ArrayExpress are stored according to MAGE-TAB: Micro Array Gene Expression Tabular.
+
+# The MAGE-TAB consists of:
+# 1. Investigation Description Format (IDF)
+#       This file contains all the important details about the experiment as title, description, submitter, and protocols.
+
+# 2. Array Design Format (ADF)
+#       This file contains all the important data about the microarray chip used.        
+
+# 3. Sample and Data Relationship Format (SDRF)
+#       This file contains all the essential information on the samples: ex what group(s) they belong to
+
+# 4. raw data files
+# 5. processed data files
+#=========================================== 
+# ~~Importing the SDRF: Sample & Data Relationship File
+# 1. Select SDRF location: 
+sdrf_location <- file.path(raw_data_dir, "E-GEOD-27034.sdrf.txt")
+# 2. use read.delim function to read from the folder
+SDRF <- read.delim(sdrf_location)
+#===========================================
+# ~~Introducing the Structure of ExpressionSet:
+# The Expression set combines several different sources of information from the MAGE-TAB into single a convenient structure. From the ExpressionSet we can extract the important information as it can be subsetted, copied, etc.
+
+#       Name             Row             Column
+# 1. AssayData:  Probes Intensities     Sample ID's
+
+# 2. PhenoData:  Sample IDs (CEL #)    Description ex Disease-Healthy
+# To check: SDRF@data or raw_data@phenoData@data
+
+# 3. featureData: Probes Intensities    Features of Chips
+# To check: raw_data@featureData@data
+
+# 4. Experiment Data : Flexible data to describe the Experiment.
+
+# 5. Raw Data & Processed Data (Distinctively)
+#===========================================
+# ~~Extracting Sample annotation into SDRF Annotated Data Frame:
+# The Rownames in SDRF@data must contain the Samples names.
+# Extract the Samples names from SDRF$Array.Data.File and assign them to rownames(SDRF)
+rownames(SDRF) <- SDRF$Array.Data.File
+
+# Turn the SDRF table into an Annotated Data Frame
+SDRF <- AnnotatedDataFrame(SDRF)
+
+# Creating the Set raw_data which contains:
+# Array data, phenoData & infromation of the chip Annotation package used
+# Each CEL files contain the Probe Intensity Values & some metadata
+raw_data <- oligo::read.celfiles(filenames = file.path(raw_data_dir, 
+                                 SDRF$Array.Data.File),
+                                 verbose = FALSE, phenoData = SDRF)
+                                 stopifnot(validObject(raw_data))
+                                 
+# When viewing the raw_data we notice that some Colums are not required.
+# To View the raw data pheno Data use:
+# head(Biobase::pData(raw_data))
+# Sub selection of the Columns: Individual - With-Without PAD
+Biobase::pData(raw_data) <- Biobase::pData(raw_data)[,c("Source.Name",
+                                                        "Characteristics.disease.",
+                                                        "Comment..Sample_source_name.",
+                                                        "Comment..Sample_title.")]
+# Remember: Matrix[,c(columns wanted)]                     
+#===========================================
+```
+
+<center><h2> Data Processing per Paper Procedure </h2></center>
+### ===========================================
+### ~~Original Paper Data Processing Steps:
+### 1. All the samples were normalized, bgCorrected & Summarized using RMA
+### 2. Correction by Median as Baseline:
+###       a. Calculate Row Medians
+###       b. New_Exp = Exp - Row Median
+### 3. Filtering of Probes:
+###       Probes with exp < 20% were excluded
+### 4.  a. Filtering by FC > 1.5 
+###     b. Filtering by P-value<0.05 (Wilcox Test & FDR Adjustment to PValues)
+### 6. Annotation, Gene Mapping & Statistical Analysis
+### ===========================================
+
+
+<center><h4> BG-Correction and Normaliztion </h4></center>
+```{r}
+#===========================================
+# ~~ Step 1: Performing BG Correction, Normalization, and Summarization
+# This will be done Using my own Normalization function, and the built in rma bg correction and summarization functions.
+
+#a. Background Correction using built in rma function in package oligo
+bg_corrected_data <- oligo::rma(raw_data, normalize=FALSE)
+
+#b.1) Normalization using QN_Final self implemented in Project-1-RMA
+source("QN_Final.R")
+calData_QN_byMedian <- quantile_normalization(Biobase::exprs(bg_corrected_data))
+#b.2) Normalization using built in rma function in package oligo
+calData_by_rma <- oligo::rma(raw_data)
+
+#~~ Assessing the Difference between QN and the Built in Function in Oligo:
+# Visually from the summaries we can tell that both functions result in extremely similar outputs:
+summary(calData_QN_byMedian)
+summary(Biobase::exprs(calData_by_rma))
+
+# The variance between both functions output is also small: order 10^-2
+sum((Biobase::exprs(calData_by_rma)-calData_QN_byMedian)^2)/(nrow(calData_QN_byMedian)*37)
+
+# This allows us to continue working with the calData_QN, but for the sake of not wasting memory and time to reassemble the Expression Set from the Matrix produced by calData_QN, we will use calData_by_rma
+cal_data <- calData_by_rma
+#===========================================
+```
+
+<center><h4> Centering the Data at the Median </h4></center>
+```{r}
+#===========================================
+# ~~ Step 2: Setting Median To Baseline and Observing the Clusters in HeatMap:
+# ~~ Get back to this later...
+row_medians_assayData <- 
+  Biobase::rowMedians(as.matrix(Biobase::exprs(cal_data)))
+Biobase::exprs(cal_data) <- sweep(Biobase::exprs(cal_data), 1, row_medians_assayData)
+#===========================================
+```
+
+
+<center><h4> Quick Check On the Difference between the Paper's Processed Data vs Our Data </h4></center>
+```{r}
+#===========================================
+# ~~ Checking the Difference between the Current Calibrated Data and the Proccessed Data
+processed <- as.matrix(read.table("C:\\Users\\Hamda\\Desktop\\University\\2nd Year\\Fall Semester\\Genomics and Data Mining\\R Workplace\\EMTAB_Arterial_Disease\\GSM902358_sample_table.txt"))
+rownames(processed) <- processed[,1]
+processed <- processed [-1]
+processed <- as.numeric(processed)
+processed <- sort(processed)
+
+pip_data <- Biobase::exprs(cal_data)[,1]
+pip_data <- sort(pip_data)
+
+variance <- sum(processed-pip_data)^2/54675
+variance
+# We can tell that the variance between the processed data and the cal_data (in 1 sample, and i assume that the variance is the same in all the other samples) is very small = order 10^-4
+#===========================================
+```
+
+<center><h4> Filtering the Lower 20% Expressed Probes </h4></center>
+```{r}
+#===========================================
+# ~~ Step 3: Filtering out the lower 20% Expressed Probes
+row_medians <- rowMedians(as.matrix(Biobase::exprs(calData_by_rma)))
+man_threshold <- sort(row_medians)[length(row_medians)*0.2]
+
+{hist_res <- hist(row_medians, 100, col = "cornsilk", freq = FALSE, 
+            main = "Histogram of the median intensities",
+            border = "antiquewhite4",
+            xlab = "Medians intensities")
+
+abline(v = man_threshold, col = "coral4", lwd = 2)}
+
+no_of_samples <- 
+  table(paste0(pData(cal_data)$Characteristics.disease.))
+no_of_samples 
+
+samples_cutoff <- min(no_of_samples)
+
+idx_man_threshold <- apply(Biobase::exprs(calData_by_rma), 1,
+                           function(x){
+                          sum(x > man_threshold) >= samples_cutoff})
+                          table(idx_man_threshold)
+
+cal_filtered <- subset(cal_data, idx_man_threshold)
+#===========================================
+```
+
+
+<center><h4> Checking if the Probe IDs Still Exist in the Filtered Data </h5></center>
+```{r}
+#=========================================
+# ~~ Checking if the final probe IDS still exist after Filtering
+probes <- read.table("C:\\Users\\Hamda\\Desktop\\University\\2nd Year\\Fall Semester\\Genomics and Data Mining\\R Workplace\\Genomics\\bif425_fall20_hamdanieh_bilal\\MicroArray_Project\\final_probes.txt")
+probes <- unlist(probes)
+probes <- as.character(probes)
+
+Present <- lapply(probes,function(x){
+    any(rownames(Biobase::exprs(cal_filtered))==x)
+})
+# Check how many are Present: Must be around 95
+length(which(Present==TRUE))
+#=========================================
+```
+
+<center><h4> Filtering by Fold Change (FC > 1.5) and P-Value (P < 0.05) After P-Value Calculation by Wilcox Test and Correction by FDR </h4></center>
+```{r}
+# ~~ Step 4 a1: Only probes with >1.5 fold change Underwent Wilcox Test
+# Calculating the Fold Change:
+normal <- Biobase::exprs(cal_filtered)[,1:18]
+disease <- Biobase::exprs(cal_filtered)[,19:37]
+fold_change_by_mean <- rowMeans(normal)-rowMeans(disease)
+
+
+FCl <- fold_change_by_mean[which(fold_change_by_mean < -1.5)]
+FCg <- fold_change_by_mean[which(fold_change_by_mean > 1.5)]
+
+logFC <- c(FCl,FCg)
+logFC
+#=========================================
+# ~~ Step 4 a2:
+# We Observe No change due to filtering, and the logFC is still not correct
+# Suspected that the splitting of the groups in the paper is not correct:
+# I split according to Control-Patient instead of Disease-Normal: 
+normal <- Biobase::exprs(cal_data)[,str_detect(Biobase::pData(raw_data)$Comment..Sample_source_name.,pattern="Controls")] 
+disease <- Biobase::exprs(cal_data)[,str_detect(Biobase::pData(raw_data)$Comment..Sample_source_name.,pattern="patients")] 
+fold_change_by_mean <- rowMeans(normal) - rowMeans(disease)
+
+
+FCl <- fold_change_by_mean[which(fold_change_by_mean < -1.5)]
+FCg <- fold_change_by_mean[which(fold_change_by_mean > 1.5)]
+logFC <- c(FCl,FCg)
+
+length(logFC)
+
+Present <- lapply(probes,function(x){
+    any(names(logFC)==x)
+})
+# Check how many are Present: Must be around 95
+length(which(Present==TRUE))
+# It appears that they also did not do this...
+#=========================================
+# ~~ Step 4 a3: On the cal_data before filtering Using again Control as Normal vs Disease
+normal <- Biobase::exprs(cal_data)[,1:18]
+disease <- Biobase::exprs(cal_data)[,19:37]
+FC <-  rowMeans(disease) - rowMeans(normal) 
+
+# One by One Trail to Compare Results:
+#For 219326_s_at
+FC["219326_s_at"]
+# VS PAPER FC = 1.53
+
+#For 205681_at
+FC["205681_at"]
+# VS PAPER FC = 1.73
+
+#Notice: All my values = log2(FC) => My FC != FC_real but it is a logFC
+#The paper follows a cut off of FC > 1.5 => logFC > log(1.5, base=2)
+
+logFC_downR <- FC[which(FC <= -log(1.5,base=2))]
+logFC_upR <- FC[which(FC >= log(1.5,base=2))]
+logFC <- c(logFC_downR,logFC_upR)
+
+#Check if they are Present in the Final Probes Found by the Paper
+Present <- lapply(probes,function(x){
+    any(names(logFC)==x)
+})
+# Check how many are Present: Must be exactly 95
+length(which(Present==TRUE))
+# SUCCESS
+# Converting to FC:
+FC <- 2^abs(logFC)
+# Filtering the Data According to FC:
+rows_select <- lapply(rownames(Biobase::exprs(cal_filtered)),function(x){
+    any(names(logFC)==x)
+})
+rows_select <- unlist(rows_select)
+calFC_filtered <- subset(cal_filtered, rows_select)
+
+#Re-Check for Presence of all Probes:
+Present <- lapply(probes,function(x){
+    any(rownames(Biobase::exprs(calFC_filtered))==x)
+})
+# Check how many are Present: Must be around 95
+length(which(Present==TRUE))
+#=========================================
+#=========================================
+# ~~Step 4 b: Now that the data is filtered by FC, we apply Wilcox Test to filter by p-value<0.05
+p_values <- apply(Biobase::exprs(calFC_filtered),1, function(x){
+   ret <- wilcox.test(x[1:18],x[19:37])$p.value
+})
+
+# Adjusting Using FDR:
+p_adj <- p.adjust(p_values, method="fdr")
+
+# Extracting Significant P_Values:
+p_signif <- subset(p_adj,p_adj <= 0.05)
+
+# Checking Number of Significant p_values: Must be between 80-100
+length(p_signif)
+
+#Check if the data still contains the Final Probes found by the Paper:
+Present_pV <- lapply(probes,function(x){
+    any(names(p_signif)==x)
+})
+# Check how many are Present: Must be between 80-100
+length(which(Present_pV==TRUE))
+
+# List of Correctly Identified Probes Like the Paper: True Positives, Significant both here and in the paper
+tp <- probes[unlist(Present_pV)]
+tp
+
+# List of Probes that are not Identified but shouldve been: False Negatives, Non-Sign here but is in the Paper
+fn <- probes[!unlist(Present_pV)]
+fn
+
+# List of Falsley Identified Probes: False Positives, Signficant Here but not in the Paper
+fp_indices <- lapply(names(p_signif),function(x){
+    any(tp==x)
+})
+fp_indices <- unlist(fp_indices)
+fp_indices <- which(fp_indices==FALSE)
+fp <- names(p_signif[fp_indices])
+fp
+#---------------------------------
+# Summary: Values might be off - or + [1-2]
+# True Positives Count:
+length(tp)
+
+# False Positive Count:
+length(fp)
+
+# False Negative Count:
+length(fn)
+
+# True Negative Count:
+nrow(Biobase::exprs(calFC_filtered))-(length(p_signif)+length(fn))
+#---------------------------------
+# Filtering the Data by Significant P-Values:
+rows_select <- lapply(rownames(Biobase::exprs(calFC_filtered)),function(x){
+    any(names(p_signif)==x)
+})
+rows_select <- unlist(rows_select)
+#Checking if the number of probes is correct:
+length(which(rows_select==TRUE))
+#Subsetting:
+final_filtered <- subset(calFC_filtered, rows_select)
+#=========================================
+```
+
+<center><h4> Annotation of the Transcripts and Eleminating those that do not map to a Gene or map to multiple Genes </h4> </center>
+```{r}
+#=========================================
+# ~~ Step 6: Annotation and Gene Mapping
+# The Paper maps the probes using several Tools: AILUN, Biomart, and GATExplorer
+# We chose to use AnnotationDbi and the respective array db hgu133plus2.db for more familiar usage:
+
+# Method 1:
+anno_palmieri <- AnnotationDbi::select(hgu133plus2.db,
+                                  keys = (featureNames(final_filtered)),
+                                  columns = c("SYMBOL", "GENENAME"),
+                                  keytype = "PROBEID")
+
+# Removing NA Mapped Probes:
+anno_data <- subset(anno_palmieri, !is.na(SYMBOL))
+
+# WITHOUT REMOVING MULTIPLE MAPPING PROBES:
+
+#Attach P-Values:
+anno_data <- cbind(anno_data,p_signif[anno_data$PROBEID])
+
+# Attach FC VAlues:
+anno_data <- cbind(anno_data,FC[anno_data$PROBEID])
+
+# Attach Log FC
+anno_data <- cbind(anno_data, logFC[anno_data$PROBEID])
+
+#Set Col names
+colnames(anno_data) <- c("PROBEID", "SYMBOL", "GENENAME", "P-VALUE", "FC", "logFC")
+
+# Down_regulated:
+down_reg <-anno_data[order(anno_data$logFC),]
+down_reg <-down_reg[1:23,]
+down_reg
+
+# Up_regulated:
+up_reg <-anno_data[order(anno_data$logFC),]
+up_reg <-up_reg[23:82,]
+up_reg
+#----------------------------------
+#----------------------------------
+
+# ~Removing Multiple Mapping Probes:
+anno_palmieri <- subset(anno_palmieri, !is.na(SYMBOL))
+# Group by ID
+anno_grouped <- group_by(anno_palmieri, PROBEID)
+# Summarize data
+anno_summarized <- 
+  dplyr::summarize(anno_grouped, no_of_matches = n_distinct(SYMBOL))
+head(anno_summarized)
+
+# Filter, only 1 gene mapping allowed
+anno_filtered <- filter(anno_summarized, no_of_matches > 1)
+head(anno_filtered)
+
+# Get Ids to exclude:
+probe_stats <- anno_filtered 
+ids_to_exclude <- probe_stats[,1]
+ids_to_exclude <- unlist(ids_to_exclude)
+# Filter them out
+indices_to_remove <- lapply(ids_to_exclude,
+                         function(x){
+                            which(anno_palmieri$PROBEID==x) })
+indices_to_remove <- unlist(indices_to_remove)
+
+# Remove Indices
+f_data <- anno_palmieri[-indices_to_remove,]
+
+#Attach P-Values:
+f_data <- cbind(f_data,p_signif[f_data$PROBEID])
+
+# Attach FC VAlues:
+f_data <- cbind(f_data,FC[f_data$PROBEID])
+
+# Attach Log FC
+f_data <- cbind(f_data, logFC[f_data$PROBEID])
+
+#Set Col names
+colnames(f_data) <- c("PROBEID", "SYMBOL", "GENENAME", "P-VALUE", "FC", "logFC")
+
+# Down_regulated:
+f_down_reg <-f_data[order(f_data$logFC),]
+f_down_reg <-f_down_reg[1:18,]
+f_down_reg <- f_down_reg[order(f_down_reg$FC),]
+# Up_regulated:
+f_up_reg <-f_data[order(f_data$logFC),]
+f_up_reg <-f_up_reg[18:67,]
+f_up_reg
+#===================================
+```
+
+<center><h2> Comparison of Results </h2></center>
+```{r}
+#===================================
+# ~~ Reading the Paper's Data
+upR_paper <- read.xlsx("C:\\Users\\Hamda\\Desktop\\University\\2nd Year\\Fall Semester\\Genomics and Data Mining\\R Workplace\\Genomics\\bif425_fall20_hamdanieh_bilal\\MicroArray_Project\\UpRegulated_in_Paper.xlsx")
+#Set Col names
+colnames(upR_paper) <- c("PROBEID",  "GENENAME", "SYMBOL", "P-VALUE", "FC")
+# Sort according to FC, High to Low
+upR_paper <-upR_paper[order(upR_paper$FC),]
+
+downR_paper <- read.xlsx("C:\\Users\\Hamda\\Desktop\\University\\2nd Year\\Fall Semester\\Genomics and Data Mining\\R Workplace\\Genomics\\bif425_fall20_hamdanieh_bilal\\MicroArray_Project\\DownRegulated_in_Paper.xlsx")
+#Set Col names
+colnames(downR_paper) <- c("PROBEID",  "GENENAME", "SYMBOL", "P-VALUE", "FC")
+downR_paper <- downR_paper[order(downR_paper$FC),]
+#--------------------
+# Down Regulated Differences:
+
+# OUR DOWN REGULATED:
+f_down_reg[,c(1,5)]
+
+# PAPERS DOWN REGULATED:
+downR_paper[,c(1,5)]
+
+# Get Down Regulated IDs:
+dR_O <- f_down_reg[,1]
+dR_P <- downR_paper[,1]
+
+dRPresent <- lapply(dR_P, function(x){
+          any(dR_O==x)
+})
+dRPresent <- unlist(dRPresent)
+# Number of Matches:
+length(which(dRPresent==TRUE))
+# Number of DownRegulated that were Missed:
+length(which(dRPresent==FALSE))
+
+# This is Definitely Due to the Annotation Step since the paper Merges between several databases, while we only do one.
+# We prove this by comparing the FC Values:
+matched <- subset(dR_P, dRPresent)
+
+# Get The Indices of the Matched Probes:
+indicesO <- apply(f_down_reg,1,function(x){
+        any(matched==x[1])
+})
+
+indicesP <- apply(downR_paper,1,function(x){
+        any(matched==x[1])
+})
+
+# Get our FC Values
+fcO <- f_down_reg[,5]
+fcO <- fcO[indicesO]
+fcO <- round(fcO,digits=2)
+
+# Get Papers FC Values
+fcP <- downR_paper[,5]
+fcP <- fcP[indicesP]
+
+# Calculate the Difference between FCs
+fcDiff <- fcO-fcP
+
+# Table to Show the Summary:
+table_diff <- cbind(matched,fcO,fcP,fcDiff)
+colnames(table_diff) <- c("ProbeIDs-Mathced", "Our FC", "Paper's FC", "FC Difference")
+table_diff <- as.data.frame(table_diff)
+table_diff
+
+# We can see the FC Difference is nearly 0 => our Data so far matches the Paper's Data
+# If we Correct for the Annotation, we will get identical Data.
+# The Paper Maps the Probe IDs Manually through GEO and other Tools.
+#--------------------
+#--------------------
+# Up Regulated Differences:
+
+# OUR UP REGULATED:
+f_up_reg[,c(1,5)]
+
+# PAPERS UP REGULATD
+upR_paper[,c(1,5)]
+
+# Get Up Regulated Probe IDs:
+uR_O <- f_up_reg[,1]
+uR_P <- upR_paper[,1]
+
+uRPresent <- lapply(uR_O, function(x){
+          any(uR_P==x)
+})
+uRPresent <- unlist(uRPresent)
+# Number of Matches:
+length(which(uRPresent==TRUE))
+# Number of Upregulated that were Extra:
+length(which(uRPresent==FALSE))
+
+# This is Definitely Due to the Annotation Step since the paper Merges between several databases, while we only do one.
+# We prove this by comparing the FC Values:
+matched_up <- subset(uR_O, uRPresent)
+
+# Get The Indices of the Matched Probes:
+indicesO_Up <- apply(f_up_reg,1,function(x){
+        any(matched_up==x[1])
+})
+
+indicesP_Up <- apply(upR_paper,1,function(x){
+        any(matched_up==x[1])
+})
+
+# Get our FC Values
+fcO <- f_up_reg[,5]
+fcO <- fcO[indicesO_Up]
+fcO <- round(fcO,digits=2)
+
+# Get Papers FC Values
+fcP <- upR_paper[,5]
+fcP <- fcP[indicesP_Up]
+
+# Calculate the Difference between FCs
+fcDiff <- fcO-fcP
+
+
+# Table to Show the Summary:
+table_diff_Up <- cbind(matched_up,fcO,fcP,fcDiff)
+colnames(table_diff_Up) <- c("ProbeIDs-Mathced", "Our FC", "Paper's FC", "FC Difference")
+table_diff_Up <- as.data.frame(table_diff_Up)
+table_diff_Up
+# AGAIN!
+# We can see the FC Difference is nearly 0 => our Data so far matches the Paper's Data
+# If we Correct for the Annotation, we will get identical Data.
+# The Paper Maps the Probe IDs Manually through GEO and other Tools.
+#-------------------
+```
+
+<center><h2> Gene Ontology </h2></center>
+```{r}
+#=================================
+# ~~ Step 7: Finding GO terms associated with differentially expressed genes
+
+# For up-regulated Genes:
+DE_genes <- f_up_reg[,1]
+back_genes_idx <- genefilter::genefinder(final_filtered, 
+                                         as.character(DE_genes), 
+                                         method = "manhattan", scale = "none")
+back_genes_idx <- sapply(back_genes_idx, function(x)x$indices)
+
+back_genes <- featureNames(final_filtered)[back_genes_idx]
+back_genes <- setdiff(back_genes, DE_genes)
+
+length(back_genes)
+
+# # Running TOPGO ANALYSIS: (AS THE PIPELINE STUDIED IN THE COURSE)
+# gene_IDs <- rownames(Biobase::exprs(cal_filtered))
+# in_universe <- gene_IDs %in% c(DE_genes, back_genes)
+# in_selection <- gene_IDs %in% DE_genes
+# 
+# all_genes <- in_selection[in_universe]
+# all_genes <- factor(as.integer(in_selection[in_universe]))
+# names(all_genes) <- gene_IDs[in_universe] 
+
+
+# 
+# top_GO_data <- new("topGOdata", ontology = "BP", allGenes = all_genes,
+#                            nodeSize = 10, annot = annFUN.db, affyLib = "hgu133plus2.db")
+# OUTPUT: Building most specific GOs .....
+# ERROR: SQL statements must be issued with dbExecute() or dbSendStatement() instead of dbGetQuery() or dbSendQuery().Error: unable to open database file
+# Tried Fixes: Unloading & re-loading
+# Reinstalling Package with dependencies
+# Checked internet Connection
+# Installed package as zip file into directory
+# ================ none worked
+
+
+# result_top_GO_elim <- 
+#   runTest(top_GO_data, algorithm = "elim", statistic = "Fisher")
+# result_top_GO_classic <- 
+#   runTest(top_GO_data, algorithm = "classic", statistic = "Fisher")
+# 
+# res_top_GO <- GenTable(top_GO_data, Fisher.elim = result_top_GO_elim,
+#         Fisher.classic = result_top_GO_classic,
+#         orderBy = "Fisher.elim" , topNodes = 100)
+# 
+# genes_top_GO <- printGenes(top_GO_data, whichTerms = res_top_GO$GO.ID,
+#     chip = "hgu133plus2.db", geneCutOff = 1000)
+# 
+# res_top_GO$sig_genes <- sapply(genes_top_GO, function(x){
+#                 str_c(paste0(x[x$'raw p-value' == 2, "Symbol.id"],";"), 
+#                       collapse = "")
+#     })
+# #=================================
+# # FOR DOWNREGULATED GENES: 
+# DE_genes <- f_down_reg[,1]
+# back_genes_idx <- genefilter::genefinder(final_filtered, 
+#                                          as.character(DE_genes), 
+#                                          method = "manhattan", scale = "none")
+# back_genes_idx <- sapply(back_genes_idx, function(x)x$indices)
+# 
+# back_genes <- featureNames(final_filtered)[back_genes_idx]
+# back_genes <- setdiff(back_genes, DE_genes)
+# 
+# length(back_genes)
+# 
+# # Running TOPGO ANALYSIS: (AS THE PIPELINE STUDIED IN THE COURSE)
+# gene_IDs <- rownames(Biobase::exprs(cal_filtered))
+# in_universe <- gene_IDs %in% c(DE_genes, back_genes)
+# in_selection <- gene_IDs %in% DE_genes
+# 
+# all_genes <- in_selection[in_universe]
+# all_genes <- factor(as.integer(in_selection[in_universe]))
+# names(all_genes) <- gene_IDs[in_universe] 
+# 
+# top_GO_data <- new("topGOdata", ontology = "BP", allGenes = all_genes,
+#                            nodeSize = 10, annot = annFUN.db, affyLib = "hgu133plus2.db")
+# result_top_GO_elim <- 
+#   runTest(top_GO_data, algorithm = "elim", statistic = "Fisher")
+# result_top_GO_classic <- 
+#   runTest(top_GO_data, algorithm = "classic", statistic = "Fisher")
+# 
+# res_top_GO <- GenTable(top_GO_data, Fisher.elim = result_top_GO_elim,
+#         Fisher.classic = result_top_GO_classic,
+#         orderBy = "Fisher.elim" , topNodes = 100)
+# 
+# genes_top_GO <- printGenes(top_GO_data, whichTerms = res_top_GO$GO.ID,
+#     chip = "hgu133plus2.db", geneCutOff = 1000)
+# 
+# res_top_GO$sig_genes <- sapply(genes_top_GO, function(x){
+#                 str_c(paste0(x[x$'raw p-value' == 2, "Symbol.id"],";"), 
+#                       collapse = "")
+#     })
+```
+
+=======
+---
+title: "MicroArray Project"
+author: "Bilal Hamdanieh"
+date: "10/13/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+<center><h1> Gene Expression Exploratory of the Human Peripheral Blood from Patients with Peripheral Arterial Disease</h1></center>
+<center><h1> && </h1></center>
+<center><h1> Comparative Analysis between the Bioconductor Pipeline and the Original Paper </h1></center>
+
+###Loading Required Libraries
+```{r, warning=FALSE, message=FALSE}
+#General Bioconductor packages
+    library(Biobase)
+    library(oligoClasses)
+     
+#Annotation and data import packages
+    library(ArrayExpress)
+    library(hgu133plus2.db)
+     
+#Quality control and pre-processing packages
+    library(oligo)
+    library(arrayQualityMetrics)
+     
+#Analysis and statistics packages
+    library(limma)
+    library(topGO)
+    library(ReactomePA)
+    library(clusterProfiler)
+     
+#Plotting and color options packages
+    library(gplots)
+    library(ggplot2)
+    library(geneplotter)
+    library(RColorBrewer)
+    library(pheatmap)
+     
+#Formatting/documentation packages
+    library(dplyr)
+    library(tidyr)
+
+#Helpers:
+    library(stringr)
+    library(matrixStats)
+    library(genefilter)
+    library(openxlsx)
+    library(devtools)
+
+```
+
+<center><h2> Downloading and Importing the Data Set to R </h2></center>
+```{r}
+#===========================================  
+#~~ Downloading and Importing the Data Set
+raw_data_dir="C:\\Users\\Hamda\\Desktop\\University\\2nd Year\\Fall Semester\\Genomics and Data Mining\\R Workplace\\EMTAB_Arterial_Disease"
+#anno_AE <- getAE("E-GEOD-27034", path = raw_data_dir, type = "full")
+#=========================================== 
+# ~~ Data Set Format Explanation:
+# The data Sets in ArrayExpress are stored according to MAGE-TAB: Micro Array Gene Expression Tabular.
+
+# The MAGE-TAB consists of:
+# 1. Investigation Description Format (IDF)
+#       This file contains all the important details about the experiment as title, description, submitter, and protocols.
+
+# 2. Array Design Format (ADF)
+#       This file contains all the important data about the microarray chip used.        
+
+# 3. Sample and Data Relationship Format (SDRF)
+#       This file contains all the essential information on the samples: ex what group(s) they belong to
+
+# 4. raw data files
+# 5. processed data files
+#=========================================== 
+# ~~Importing the SDRF: Sample & Data Relationship File
+# 1. Select SDRF location: 
+sdrf_location <- file.path(raw_data_dir, "E-GEOD-27034.sdrf.txt")
+# 2. use read.delim function to read from the folder
+SDRF <- read.delim(sdrf_location)
+#===========================================
+# ~~Introducing the Structure of ExpressionSet:
+# The Expression set combines several different sources of information from the MAGE-TAB into single a convenient structure. From the ExpressionSet we can extract the important information as it can be subsetted, copied, etc.
+
+#       Name             Row             Column
+# 1. AssayData:  Probes Intensities     Sample ID's
+
+# 2. PhenoData:  Sample IDs (CEL #)    Description ex Disease-Healthy
+# To check: SDRF@data or raw_data@phenoData@data
+
+# 3. featureData: Probes Intensities    Features of Chips
+# To check: raw_data@featureData@data
+
+# 4. Experiment Data : Flexible data to describe the Experiment.
+
+# 5. Raw Data & Processed Data (Distinctively)
+#===========================================
+# ~~Extracting Sample annotation into SDRF Annotated Data Frame:
+# The Rownames in SDRF@data must contain the Samples names.
+# Extract the Samples names from SDRF$Array.Data.File and assign them to rownames(SDRF)
+rownames(SDRF) <- SDRF$Array.Data.File
+
+# Turn the SDRF table into an Annotated Data Frame
+SDRF <- AnnotatedDataFrame(SDRF)
+
+# Creating the Set raw_data which contains:
+# Array data, phenoData & infromation of the chip Annotation package used
+# Each CEL files contain the Probe Intensity Values & some metadata
+raw_data <- oligo::read.celfiles(filenames = file.path(raw_data_dir, 
+                                 SDRF$Array.Data.File),
+                                 verbose = FALSE, phenoData = SDRF)
+                                 stopifnot(validObject(raw_data))
+                                 
+# When viewing the raw_data we notice that some Colums are not required.
+# To View the raw data pheno Data use:
+# head(Biobase::pData(raw_data))
+# Sub selection of the Columns: Individual - With-Without PAD
+Biobase::pData(raw_data) <- Biobase::pData(raw_data)[,c("Source.Name",
+                                                        "Characteristics.disease.",
+                                                        "Comment..Sample_source_name.",
+                                                        "Comment..Sample_title.")]
+# Remember: Matrix[,c(columns wanted)]                     
+#===========================================
+```
+
+<center><h2> Data Processing per Paper Procedure </h2></center>
+### ===========================================
+### ~~Original Paper Data Processing Steps:
+### 1. All the samples were normalized, bgCorrected & Summarized using RMA
+### 2. Correction by Median as Baseline:
+###     a. Calculate Row Medians
+###     b. New_Exp = Exp - Row Median
+### 3. Filtering of Probes:
+###       Probes with exp < 20% were excluded
+### 4. Filtering By Significance: 
+###     a. Filtering by FC > 1.5 
+###     b. Filtering by P-value<0.05 (Wilcox Test & FDR Adjustment to PValues)
+### 6. Annotation, Gene Mapping & Statistical Analysis
+### ===========================================
+
+
+<center><h4> BG-Correction and Normaliztion </h4></center>
+```{r}
+#===========================================
+# ~~ Step 1: Performing BG Correction, Normalization, and Summarization
+# This will be done Using my own Normalization function, and the built in rma bg correction and summarization functions.
+
+#a. Background Correction using built in rma function in package oligo
+bg_corrected_data <- oligo::rma(raw_data, normalize=FALSE)
+
+#b.1) Normalization using QN_Final self implemented in Project-1-RMA
+source("QN_Final.R")
+calData_QN_byMedian <- quantile_normalization(Biobase::exprs(bg_corrected_data))
+#b.2) Normalization using built in rma function in package oligo
+calData_by_rma <- oligo::rma(raw_data)
+
+#~~ Assessing the Difference between QN and the Built in Function in Oligo:
+# Visually from the summaries we can tell that both functions result in extremely similar outputs:
+summary(calData_QN_byMedian)
+summary(Biobase::exprs(calData_by_rma))
+
+# The variance between both functions output is also small: order 10^-2
+sum((Biobase::exprs(calData_by_rma)-calData_QN_byMedian)^2)/(nrow(calData_QN_byMedian)*37)
+
+# This allows us to continue working with the calData_QN, but for the sake of not wasting memory and time to reassemble the Expression Set from the Matrix produced by calData_QN, we will use calData_by_rma
+cal_data <- calData_by_rma
+#===========================================
+```
+
+<center><h4> Centering the Data at the Median </h4></center>
+```{r}
+#===========================================
+# ~~ Step 2: Setting Median To Baseline and Observing the Clusters in HeatMap:
+# ~~ Get back to this later...
+row_medians_assayData <- 
+  Biobase::rowMedians(as.matrix(Biobase::exprs(cal_data)))
+Biobase::exprs(cal_data) <- sweep(Biobase::exprs(cal_data), 1, row_medians_assayData)
+#===========================================
+```
+
+
+<center><h4> Quick Check On the Difference between the Paper's Processed Data vs Our Data </h4></center>
+```{r}
+#===========================================
+# ~~ Checking the Difference between the Current Calibrated Data and the Proccessed Data
+processed <- as.matrix(read.table("C:\\Users\\Hamda\\Desktop\\University\\2nd Year\\Fall Semester\\Genomics and Data Mining\\R Workplace\\EMTAB_Arterial_Disease\\GSM902358_sample_table.txt"))
+rownames(processed) <- processed[,1]
+processed <- processed [-1]
+processed <- as.numeric(processed)
+processed <- sort(processed)
+
+pip_data <- Biobase::exprs(cal_data)[,1]
+pip_data <- sort(pip_data)
+
+variance <- sum(processed-pip_data)^2/54675
+variance
+# We can tell that the variance between the processed data and the cal_data (in 1 sample, and i assume that the variance is the same in all the other samples) is very small = order 10^-4
+#===========================================
+```
+
+<center><h4> Filtering the Lower 20% Expressed Probes </h4></center>
+```{r}
+#===========================================
+# ~~ Step 3: Filtering out the lower 20% Expressed Probes
+row_medians <- rowMedians(as.matrix(Biobase::exprs(calData_by_rma)))
+man_threshold <- sort(row_medians)[length(row_medians)*0.2]
+
+{hist_res <- hist(row_medians, 100, col = "cornsilk", freq = FALSE, 
+            main = "Histogram of the median intensities",
+            border = "antiquewhite4",
+            xlab = "Medians intensities")
+
+abline(v = man_threshold, col = "coral4", lwd = 2)}
+
+no_of_samples <- 
+  table(paste0(pData(cal_data)$Characteristics.disease.))
+no_of_samples 
+
+samples_cutoff <- min(no_of_samples)
+
+idx_man_threshold <- apply(Biobase::exprs(calData_by_rma), 1,
+                           function(x){
+                          sum(x > man_threshold) >= samples_cutoff})
+                          table(idx_man_threshold)
+
+cal_filtered <- subset(cal_data, idx_man_threshold)
+#===========================================
+```
+
+
+<center><h4> Checking if the Probe IDs Still Exist in the Filtered Data </h5></center>
+```{r}
+#=========================================
+# ~~ Checking if the final probe IDS still exist after Filtering
+probes <- read.table("C:\\Users\\Hamda\\Desktop\\University\\2nd Year\\Fall Semester\\Genomics and Data Mining\\R Workplace\\Genomics\\bif425_fall20_hamdanieh_bilal\\MicroArray_Project\\final_probes.txt")
+probes <- unlist(probes)
+probes <- as.character(probes)
+
+Present <- lapply(probes,function(x){
+    any(rownames(Biobase::exprs(cal_filtered))==x)
+})
+# Check how many are Present: Must be around 95
+length(which(Present==TRUE))
+#=========================================
+```
+
+<center><h4> Filtering by Fold Change (FC > 1.5) and P-Value (P < 0.05) After P-Value Calculation by Wilcox Test and Correction by FDR </h4></center>
+```{r}
+# ~~ Step 4 a1: Only probes with >1.5 fold change Underwent Wilcox Test
+# Calculating the Fold Change:
+normal <- Biobase::exprs(cal_filtered)[,1:18]
+disease <- Biobase::exprs(cal_filtered)[,19:37]
+fold_change_by_mean <- rowMeans(normal)-rowMeans(disease)
+
+
+FCl <- fold_change_by_mean[which(fold_change_by_mean < -1.5)]
+FCg <- fold_change_by_mean[which(fold_change_by_mean > 1.5)]
+
+logFC <- c(FCl,FCg)
+logFC
+#=========================================
+# ~~ Step 4 a2:
+# We Observe No change due to filtering, and the logFC is still not correct
+# Suspected that the splitting of the groups in the paper is not correct:
+# I split according to Control-Patient instead of Disease-Normal: 
+normal <- Biobase::exprs(cal_data)[,str_detect(Biobase::pData(raw_data)$Comment..Sample_source_name.,pattern="Controls")] 
+disease <- Biobase::exprs(cal_data)[,str_detect(Biobase::pData(raw_data)$Comment..Sample_source_name.,pattern="patients")] 
+fold_change_by_mean <- rowMeans(normal) - rowMeans(disease)
+
+
+FCl <- fold_change_by_mean[which(fold_change_by_mean < -1.5)]
+FCg <- fold_change_by_mean[which(fold_change_by_mean > 1.5)]
+logFC <- c(FCl,FCg)
+
+length(logFC)
+
+Present <- lapply(probes,function(x){
+    any(names(logFC)==x)
+})
+# Check how many are Present: Must be around 95
+length(which(Present==TRUE))
+# It appears that they also did not do this...
+#=========================================
+# ~~ Step 4 a3: On the cal_data before filtering Using again Control as Normal vs Disease
+normal <- Biobase::exprs(cal_data)[,1:18]
+disease <- Biobase::exprs(cal_data)[,19:37]
+FC <-  rowMeans(disease) - rowMeans(normal) 
+
+# One by One Trail to Compare Results:
+#For 219326_s_at
+FC["219326_s_at"]
+# VS PAPER FC = 1.53
+
+#For 205681_at
+FC["205681_at"]
+# VS PAPER FC = 1.73
+
+#Notice: All my values = log2(FC) => My FC != FC_real but it is a logFC
+#The paper follows a cut off of FC > 1.5 => logFC > log(1.5, base=2)
+
+logFC_downR <- FC[which(FC <= -log(1.5,base=2))]
+logFC_upR <- FC[which(FC >= log(1.5,base=2))]
+logFC <- c(logFC_downR,logFC_upR)
+
+#Check if they are Present in the Final Probes Found by the Paper
+Present <- lapply(probes,function(x){
+    any(names(logFC)==x)
+})
+# Check how many are Present: Must be exactly 95
+length(which(Present==TRUE))
+# SUCCESS
+# Converting to FC:
+FC <- 2^abs(logFC)
+# Filtering the Data According to FC:
+rows_select <- lapply(rownames(Biobase::exprs(cal_filtered)),function(x){
+    any(names(logFC)==x)
+})
+rows_select <- unlist(rows_select)
+calFC_filtered <- subset(cal_filtered, rows_select)
+
+#Re-Check for Presence of all Probes:
+Present <- lapply(probes,function(x){
+    any(rownames(Biobase::exprs(calFC_filtered))==x)
+})
+# Check how many are Present: Must be around 95
+length(which(Present==TRUE))
+#=========================================
+#=========================================
+# ~~Step 4 b: Now that the data is filtered by FC, we apply Wilcox Test to filter by p-value<0.05
+p_values <- apply(Biobase::exprs(calFC_filtered),1, function(x){
+   ret <- wilcox.test(x[1:18],x[19:37])$p.value
+})
+
+# Adjusting Using FDR:
+p_adj <- p.adjust(p_values, method="fdr")
+
+# Extracting Significant P_Values:
+p_signif <- subset(p_adj,p_adj <= 0.05)
+
+# Checking Number of Significant p_values: Must be between 80-100
+length(p_signif)
+
+#Check if the data still contains the Final Probes found by the Paper:
+Present_pV <- lapply(probes,function(x){
+    any(names(p_signif)==x)
+})
+# Check how many are Present: Must be between 80-100
+length(which(Present_pV==TRUE))
+
+# List of Correctly Identified Probes Like the Paper: True Positives, Significant both here and in the paper
+tp <- probes[unlist(Present_pV)]
+tp
+
+# List of Probes that are not Identified but shouldve been: False Negatives, Non-Sign here but is in the Paper
+fn <- probes[!unlist(Present_pV)]
+fn
+
+# List of Falsley Identified Probes: False Positives, Signficant Here but not in the Paper
+fp_indices <- lapply(names(p_signif),function(x){
+    any(tp==x)
+})
+fp_indices <- unlist(fp_indices)
+fp_indices <- which(fp_indices==FALSE)
+fp <- names(p_signif[fp_indices])
+fp
+#---------------------------------
+# Summary: Values might be off - or + [1-2]
+# True Positives Count:
+length(tp)
+
+# False Positive Count:
+length(fp)
+
+# False Negative Count:
+length(fn)
+
+# True Negative Count:
+nrow(Biobase::exprs(calFC_filtered))-(length(p_signif)+length(fn))
+#---------------------------------
+# Filtering the Data by Significant P-Values:
+rows_select <- lapply(rownames(Biobase::exprs(calFC_filtered)),function(x){
+    any(names(p_signif)==x)
+})
+rows_select <- unlist(rows_select)
+#Checking if the number of probes is correct:
+length(which(rows_select==TRUE))
+#Subsetting:
+final_filtered <- subset(calFC_filtered, rows_select)
+#=========================================
+```
+
+<center><h4> Annotation of the Transcripts and Eleminating those that do not map to a Gene or map to multiple Genes </h4> </center>
+```{r}
+#=========================================
+# ~~ Step 6: Annotation and Gene Mapping
+# The Paper maps the probes using several Tools: AILUN, Biomart, and GATExplorer
+# We chose to use AnnotationDbi and the respective array db hgu133plus2.db for more familiar usage:
+
+# Method 1:
+anno_palmieri <- AnnotationDbi::select(hgu133plus2.db,
+                                  keys = (featureNames(final_filtered)),
+                                  columns = c("SYMBOL", "GENENAME"),
+                                  keytype = "PROBEID")
+
+# Removing NA Mapped Probes:
+anno_data <- subset(anno_palmieri, !is.na(SYMBOL))
+
+# WITHOUT REMOVING MULTIPLE MAPPING PROBES:
+
+#Attach P-Values:
+anno_data <- cbind(anno_data,p_signif[anno_data$PROBEID])
+
+# Attach FC VAlues:
+anno_data <- cbind(anno_data,FC[anno_data$PROBEID])
+
+# Attach Log FC
+anno_data <- cbind(anno_data, logFC[anno_data$PROBEID])
+
+#Set Col names
+colnames(anno_data) <- c("PROBEID", "SYMBOL", "GENENAME", "P-VALUE", "FC", "logFC")
+
+# Down_regulated:
+down_reg <-anno_data[order(anno_data$logFC),]
+down_reg <-down_reg[1:23,]
+down_reg
+
+# Up_regulated:
+up_reg <-anno_data[order(anno_data$logFC),]
+up_reg <-up_reg[23:82,]
+up_reg
+#----------------------------------
+#----------------------------------
+
+# ~Removing Multiple Mapping Probes:
+anno_palmieri <- subset(anno_palmieri, !is.na(SYMBOL))
+# Group by ID
+anno_grouped <- group_by(anno_palmieri, PROBEID)
+# Summarize data
+anno_summarized <- 
+  dplyr::summarize(anno_grouped, no_of_matches = n_distinct(SYMBOL))
+head(anno_summarized)
+
+# Filter, only 1 gene mapping allowed
+anno_filtered <- filter(anno_summarized, no_of_matches > 1)
+head(anno_filtered)
+
+# Get Ids to exclude:
+probe_stats <- anno_filtered 
+ids_to_exclude <- probe_stats[,1]
+ids_to_exclude <- unlist(ids_to_exclude)
+# Filter them out
+indices_to_remove <- lapply(ids_to_exclude,
+                         function(x){
+                            which(anno_palmieri$PROBEID==x) })
+indices_to_remove <- unlist(indices_to_remove)
+
+# Remove Indices
+f_data <- anno_palmieri[-indices_to_remove,]
+
+#Attach P-Values:
+f_data <- cbind(f_data,p_signif[f_data$PROBEID])
+
+# Attach FC VAlues:
+f_data <- cbind(f_data,FC[f_data$PROBEID])
+
+# Attach Log FC
+f_data <- cbind(f_data, logFC[f_data$PROBEID])
+
+#Set Col names
+colnames(f_data) <- c("PROBEID", "SYMBOL", "GENENAME", "P-VALUE", "FC", "logFC")
+
+# Down_regulated:
+f_down_reg <-f_data[order(f_data$logFC),]
+f_down_reg <-f_down_reg[1:18,]
+f_down_reg <- f_down_reg[order(f_down_reg$FC),]
+# Up_regulated:
+f_up_reg <-f_data[order(f_data$logFC),]
+f_up_reg <-f_up_reg[18:67,]
+f_up_reg
+#===================================
+```
+
+<center><h2> Comparison of Results </h2></center>
+```{r}
+#===================================
+# ~~ Reading the Paper's Data
+upR_paper <- read.xlsx("C:\\Users\\Hamda\\Desktop\\University\\2nd Year\\Fall Semester\\Genomics and Data Mining\\R Workplace\\Genomics\\bif425_fall20_hamdanieh_bilal\\MicroArray_Project\\UpRegulated_in_Paper.xlsx")
+#Set Col names
+colnames(upR_paper) <- c("PROBEID",  "GENENAME", "SYMBOL", "P-VALUE", "FC")
+# Sort according to FC, High to Low
+upR_paper <-upR_paper[order(upR_paper$FC),]
+
+downR_paper <- read.xlsx("C:\\Users\\Hamda\\Desktop\\University\\2nd Year\\Fall Semester\\Genomics and Data Mining\\R Workplace\\Genomics\\bif425_fall20_hamdanieh_bilal\\MicroArray_Project\\DownRegulated_in_Paper.xlsx")
+#Set Col names
+colnames(downR_paper) <- c("PROBEID",  "GENENAME", "SYMBOL", "P-VALUE", "FC")
+downR_paper <- downR_paper[order(downR_paper$FC),]
+#--------------------
+# Down Regulated Differences:
+
+# OUR DOWN REGULATED:
+f_down_reg[,c(1,5)]
+
+# PAPERS DOWN REGULATED:
+downR_paper[,c(1,5)]
+
+# Get Down Regulated IDs:
+dR_O <- f_down_reg[,1]
+dR_P <- downR_paper[,1]
+
+dRPresent <- lapply(dR_P, function(x){
+          any(dR_O==x)
+})
+dRPresent <- unlist(dRPresent)
+# Number of Matches:
+length(which(dRPresent==TRUE))
+# Number of DownRegulated that were Missed:
+length(which(dRPresent==FALSE))
+
+# This is Definitely Due to the Annotation Step since the paper Merges between several databases, while we only do one.
+# We prove this by comparing the FC Values:
+matched <- subset(dR_P, dRPresent)
+
+# Get The Indices of the Matched Probes:
+indicesO <- apply(f_down_reg,1,function(x){
+        any(matched==x[1])
+})
+
+indicesP <- apply(downR_paper,1,function(x){
+        any(matched==x[1])
+})
+
+# Get our FC Values
+fcO <- f_down_reg[,5]
+fcO <- fcO[indicesO]
+fcO <- round(fcO,digits=2)
+
+# Get Papers FC Values
+fcP <- downR_paper[,5]
+fcP <- fcP[indicesP]
+
+# Calculate the Difference between FCs
+fcDiff <- fcO-fcP
+
+# Table to Show the Summary:
+table_diff <- cbind(matched,fcO,fcP,fcDiff)
+colnames(table_diff) <- c("ProbeIDs-Mathced", "Our FC", "Paper's FC", "FC Difference")
+table_diff <- as.data.frame(table_diff)
+table_diff
+
+# We can see the FC Difference is nearly 0 => our Data so far matches the Paper's Data
+# If we Correct for the Annotation, we will get identical Data.
+# The Paper Maps the Probe IDs Manually through GEO and other Tools.
+#--------------------
+#--------------------
+# Up Regulated Differences:
+
+# OUR UP REGULATED:
+f_up_reg[,c(1,5)]
+
+# PAPERS UP REGULATD
+upR_paper[,c(1,5)]
+
+# Get Up Regulated Probe IDs:
+uR_O <- f_up_reg[,1]
+uR_P <- upR_paper[,1]
+
+uRPresent <- lapply(uR_O, function(x){
+          any(uR_P==x)
+})
+uRPresent <- unlist(uRPresent)
+# Number of Matches:
+length(which(uRPresent==TRUE))
+# Number of Upregulated that were Extra:
+length(which(uRPresent==FALSE))
+
+# This is Definitely Due to the Annotation Step since the paper Merges between several databases, while we only do one.
+# We prove this by comparing the FC Values:
+matched_up <- subset(uR_O, uRPresent)
+
+# Get The Indices of the Matched Probes:
+indicesO_Up <- apply(f_up_reg,1,function(x){
+        any(matched_up==x[1])
+})
+
+indicesP_Up <- apply(upR_paper,1,function(x){
+        any(matched_up==x[1])
+})
+
+# Get our FC Values
+fcO <- f_up_reg[,5]
+fcO <- fcO[indicesO_Up]
+fcO <- round(fcO,digits=2)
+
+# Get Papers FC Values
+fcP <- upR_paper[,5]
+fcP <- fcP[indicesP_Up]
+
+# Calculate the Difference between FCs
+fcDiff <- fcO-fcP
+
+
+# Table to Show the Summary:
+table_diff_Up <- cbind(matched_up,fcO,fcP,fcDiff)
+colnames(table_diff_Up) <- c("ProbeIDs-Mathced", "Our FC", "Paper's FC", "FC Difference")
+table_diff_Up <- as.data.frame(table_diff_Up)
+table_diff_Up
+# AGAIN!
+# We can see the FC Difference is nearly 0 => our Data so far matches the Paper's Data
+# If we Correct for the Annotation, we will get identical Data.
+# The Paper Maps the Probe IDs Manually through GEO and other Tools.
+#-------------------
+```
+
+<center><h2> Gene Ontology </h2></center>
+```{r}
+#=================================
+# ~~ Step 7: Finding GO terms associated with differentially expressed genes
+
+# For up-regulated Genes:
+DE_genes <- f_up_reg[,1]
+back_genes_idx <- genefilter::genefinder(final_filtered, 
+                                         as.character(DE_genes), 
+                                         method = "manhattan", scale = "none")
+back_genes_idx <- sapply(back_genes_idx, function(x)x$indices)
+
+back_genes <- featureNames(final_filtered)[back_genes_idx]
+back_genes <- setdiff(back_genes, DE_genes)
+
+length(back_genes)
+
+# Running TOPGO ANALYSIS: (AS THE PIPELINE STUDIED IN THE COURSE)
+gene_IDs <- rownames(Biobase::exprs(cal_filtered))
+in_universe <- gene_IDs %in% c(DE_genes, back_genes)
+in_selection <- gene_IDs %in% DE_genes
+ 
+all_genes <- in_selection[in_universe]
+all_genes <- factor(as.integer(in_selection[in_universe]))
+names(all_genes) <- gene_IDs[in_universe] 
+
+
+ 
+# top_GO_data <- new("topGOdata", ontology = "BP", allGenes = all_genes,
+#                            nodeSize = 10, annot = annFUN.db, affyLib = "hgu133plus2.db")
+# OUTPUT: Building most specific GOs .....
+# ERROR: SQL statements must be issued with dbExecute() or dbSendStatement() instead of dbGetQuery() or dbSendQuery().Error: unable to open database file
+# Tried Fixes: Unloading & re-loading
+# Reinstalling Package with dependencies
+# Checked internet Connection
+# Installed package as zip file into directory
+# ================ none worked
+
+
+# result_top_GO_elim <- 
+#   runTest(top_GO_data, algorithm = "elim", statistic = "Fisher")
+# result_top_GO_classic <- 
+#   runTest(top_GO_data, algorithm = "classic", statistic = "Fisher")
+# 
+# res_top_GO <- GenTable(top_GO_data, Fisher.elim = result_top_GO_elim,
+#         Fisher.classic = result_top_GO_classic,
+#         orderBy = "Fisher.elim" , topNodes = 100)
+# 
+# genes_top_GO <- printGenes(top_GO_data, whichTerms = res_top_GO$GO.ID,
+#     chip = "hgu133plus2.db", geneCutOff = 1000)
+# 
+# res_top_GO$sig_genes <- sapply(genes_top_GO, function(x){
+#                 str_c(paste0(x[x$'raw p-value' == 2, "Symbol.id"],";"), 
+#                       collapse = "")
+#     })
+# #=================================
+# # FOR DOWNREGULATED GENES: 
+# DE_genes <- f_down_reg[,1]
+# back_genes_idx <- genefilter::genefinder(final_filtered, 
+#                                          as.character(DE_genes), 
+#                                          method = "manhattan", scale = "none")
+# back_genes_idx <- sapply(back_genes_idx, function(x)x$indices)
+# 
+# back_genes <- featureNames(final_filtered)[back_genes_idx]
+# back_genes <- setdiff(back_genes, DE_genes)
+# 
+# length(back_genes)
+# 
+# # Running TOPGO ANALYSIS: (AS THE PIPELINE STUDIED IN THE COURSE)
+# gene_IDs <- rownames(Biobase::exprs(cal_filtered))
+# in_universe <- gene_IDs %in% c(DE_genes, back_genes)
+# in_selection <- gene_IDs %in% DE_genes
+# 
+# all_genes <- in_selection[in_universe]
+# all_genes <- factor(as.integer(in_selection[in_universe]))
+# names(all_genes) <- gene_IDs[in_universe] 
+# 
+# top_GO_data <- new("topGOdata", ontology = "BP", allGenes = all_genes,
+#                            nodeSize = 10, annot = annFUN.db, affyLib = "hgu133plus2.db")
+# result_top_GO_elim <- 
+#   runTest(top_GO_data, algorithm = "elim", statistic = "Fisher")
+# result_top_GO_classic <- 
+#   runTest(top_GO_data, algorithm = "classic", statistic = "Fisher")
+# 
+# res_top_GO <- GenTable(top_GO_data, Fisher.elim = result_top_GO_elim,
+#         Fisher.classic = result_top_GO_classic,
+#         orderBy = "Fisher.elim" , topNodes = 100)
+# 
+# genes_top_GO <- printGenes(top_GO_data, whichTerms = res_top_GO$GO.ID,
+#     chip = "hgu133plus2.db", geneCutOff = 1000)
+# 
+# res_top_GO$sig_genes <- sapply(genes_top_GO, function(x){
+#                 str_c(paste0(x[x$'raw p-value' == 2, "Symbol.id"],";"), 
+#                       collapse = "")
+#     })
+```
+
+>>>>>>> Stashed changes
